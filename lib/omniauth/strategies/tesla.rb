@@ -38,6 +38,8 @@ module OmniAuth
         super.tap do |params|
           # Tesla requires 'audience' in the token exchange.
           params[:audience] = options[:audience]
+          # Include client_id in token exchange
+          params[:client_id] = options.client_id
         end
       end
 
