@@ -1,27 +1,24 @@
 require 'omniauth-oauth2'
+require 'multi_json'
 
 module OmniAuth
   module Strategies
     class Tesla < OmniAuth::Strategies::OAuth2
       option :name, 'tesla'
 
-      # Tesla's OAuth endpoints as documented:
+      # Tesla's OAuth endpoints:
       option :client_options, {
         site: 'https://auth.tesla.com',
         authorize_url: 'https://auth.tesla.com/oauth2/v3/authorize',
         token_url: 'https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token'
       }
 
-      # Default scopes:
-      option :scope, 'openid offline_access'
-      # Other Tesla scopes you might need: vehicle_device_data, vehicle_cmds, etc.
+      # Default scopes (adjust as needed for user_data, etc.):
+      option :scope, 'openid offline_access user_data'
 
-      # By default, Tesla requires an audience in the token exchange.
-      # We'll provide a default but allow override:
+      # Default audience required for Tesla token exchange:
       option :audience, 'https://fleet-api.prd.na.vn.cloud.tesla.com'
 
-      # OmniAuth automatically includes response_type=code and passes
-      # your :scope, :client_id, :redirect_uri, etc.
       option :authorize_params, {
         response_type: 'code'
       }
@@ -29,43 +26,58 @@ module OmniAuth
       # If you need to tweak how scopes or additional params are passed:
       def authorize_params
         super.tap do |params|
-          # Ensure scope is set from your middleware config or fallback to default
+          # In case someone sets a custom scope in the provider config.
           params[:scope] ||= options[:scope]
-          # If you need more custom params for Tesla, you can set them here.
         end
       end
 
-      # OmniAuth’s OAuth2 strategy automatically sends client_id, client_secret,
-      # code, grant_type, and redirect_uri. We add audience here.
+      # Add audience into the token request
       def token_params
         super.tap do |params|
-          # Since the Tesla token endpoint requires 'audience', we use our default
-          # unless it's explicitly overridden in the middleware config.
+          # Tesla requires 'audience' in the token exchange.
           params[:audience] = options[:audience]
         end
       end
 
-      # The uid method typically returns a unique user identifier.
-      # If you decode Tesla's id_token, you can parse 'sub' here.
-      uid { raw_info['sub'] }
+      # Tesla's /api/1/users/me returns:
+      # {
+      #   "response": {
+      #     "email": "test-user@tesla.com",
+      #     "full_name": "Testy McTesterson",
+      #     "profile_image_url": "...",
+      #     "vault_uuid": "b5c443af-a286-49eb-a4ad-35a97963155d"
+      #   }
+      # }
+      #
+      # We'll use vault_uuid as the `uid` if present.
+      uid { raw_info.dig('response', 'vault_uuid') }
 
-      # The info hash typically contains user info if you have a userinfo endpoint
-      # or have decoded the id_token. Since Tesla doesn’t provide a userinfo endpoint,
-      # we leave this blank (or decode the ID token if you like).
       info do
-        {}
+        response_data = raw_info['response'] || {}
+        {
+          email:            response_data['email'],
+          full_name:        response_data['full_name'],
+          profile_image_url: response_data['profile_image_url']
+        }
       end
 
       extra do
+        # Provide the entire user hash for debugging or additional use.
         { raw_info: raw_info }
       end
 
-      # If you decode the ID token or call a future userinfo endpoint, populate raw_info:
+      # Fetch user info from /api/1/users/me
+      # By default, OmniAuth::Strategies::OAuth2 includes the
+      # access token as a Bearer token in the Authorization header.
       def raw_info
+        @raw_info ||= access_token.get('/api/1/users/me').parsed
+      rescue ::OAuth2::Error => e
+        # If for some reason we can’t fetch user info (e.g. insufficient scope),
+        # fallback to empty hash or handle error as needed.
         {}
       end
 
-      # credentials block to store token and refresh_token
+      # Store access_token info (token, refresh_token, expires, etc.)
       credentials do
         hash = { 'token' => access_token.token }
         hash['refresh_token'] = access_token.refresh_token if access_token.refresh_token
@@ -74,11 +86,9 @@ module OmniAuth
         hash
       end
 
-      # Override callback_url if your callback URL is not the default that OmniAuth calculates:
-      #
-      #   OmniAuth automatically sets `redirect_uri` to this callback_url
-      #   as part of the OAuth flow. If your app sits behind a proxy or
-      #   you need a different callback route, override `callback_url` here.
+      # Override callback_url if your callback URL is not the default that OmniAuth calculates.
+      # The default behavior is to use full_host + script_name + callback_path,
+      # which is typically correct and matches what OmniAuth sends as redirect_uri.
       #
       # def callback_url
       #   full_host + script_name + callback_path
