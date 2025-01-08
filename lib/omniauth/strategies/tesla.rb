@@ -28,6 +28,8 @@ module OmniAuth
         super.tap do |params|
           # In case someone sets a custom scope in the provider config.
           params[:scope] ||= options[:scope]
+          # Ensure spaces are encoded as %20 instead of +
+          params[:scope] = URI.encode_www_form_component(params[:scope]).gsub('+', '%20')
         end
       end
 
