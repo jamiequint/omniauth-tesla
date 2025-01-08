@@ -28,19 +28,34 @@ module OmniAuth
         super.tap do |params|
           # In case someone sets a custom scope in the provider config.
           params[:scope] ||= options[:scope]
-          # Ensure spaces are encoded as %20 instead of +
-          params[:scope] = URI.encode_www_form_component(params[:scope]).gsub('+', '%20')
+          # Explicitly include client_id
+          params[:client_id] = options.client_id
         end
       end
 
       # Add audience into the token request
       def token_params
-        super.tap do |params|
-          # Tesla requires 'audience' in the token exchange.
-          params[:audience] = options[:audience]
-          # Include client_id in token exchange
+        params = super.tap do |params|
+          # Required parameters for Tesla token exchange
+          params[:grant_type] = 'authorization_code'
+          params[:code] = request.params['code']
           params[:client_id] = options.client_id
+          params[:client_secret] = options.client_secret
+          params[:audience] = options[:audience]
+          params[:redirect_uri] = callback_url
         end
+        
+        params
+      end
+
+      # You might also need to override build_access_token
+      def build_access_token
+        verifier = request.params['code']
+        client.auth_code.get_token(
+          verifier,
+          token_params,
+          deep_symbolize(options.auth_token_params || {})
+        )
       end
 
       # Tesla's /api/1/users/me returns:
@@ -74,11 +89,18 @@ module OmniAuth
       # By default, OmniAuth::Strategies::OAuth2 includes the
       # access token as a Bearer token in the Authorization header.
       def raw_info
-        @raw_info ||= access_token.get('/api/1/users/me').parsed
-      rescue ::OAuth2::Error => e
-        # If for some reason we can’t fetch user info (e.g. insufficient scope),
-        # fallback to empty hash or handle error as needed.
-        {}
+        @raw_info ||= begin
+          url = 'https://fleet-api.prd.na.vn.cloud.tesla.com/api/1/users/me'
+          
+          response = access_token.get(url, headers: {
+            'Content-Type' => 'application/json'
+          })
+          
+          MultiJson.load(response.body)
+        rescue ::OAuth2::Error => e
+          puts "DEBUG - Error response: #{e.response&.body}"
+          {}
+        end
       end
 
       # Store access_token info (token, refresh_token, expires, etc.)
@@ -94,9 +116,14 @@ module OmniAuth
       # The default behavior is to use full_host + script_name + callback_path,
       # which is typically correct and matches what OmniAuth sends as redirect_uri.
       #
-      # def callback_url
-      #   full_host + script_name + callback_path
-      # end
+      def callback_url
+         full_host + script_name + callback_path
+      end
+
+      # You might also want to log in the request phase
+      def request_phase
+        super
+      end
     end
   end
 end
