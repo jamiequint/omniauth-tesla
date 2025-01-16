@@ -1,3 +1,4 @@
+# lib/omniauth/strategies/tesla.rb
 require 'omniauth-oauth2'
 require 'multi_json'
 
@@ -23,7 +24,23 @@ module OmniAuth
         response_type: 'code'
       }
 
-      # If you need to tweak how scopes or additional params are passed:
+      # Define class-level accessors for OAuth configuration
+      class << self
+        attr_accessor :client_id, :client_secret, :site, :authorize_url, :token_url, :audience
+      end
+
+      # Initialize class-level accessors with instance-level options
+      def initialize(*args, &block)
+        super
+        self.class.client_id ||= options.client_id
+        self.class.client_secret ||= options.client_secret
+        self.class.site ||= options.client_options.site
+        self.class.authorize_url ||= options.client_options.authorize_url
+        self.class.token_url ||= options.client_options.token_url
+        self.class.audience ||= options.audience
+      end
+
+      # Override authorize_params to include necessary parameters
       def authorize_params
         super.tap do |params|
           # In case someone sets a custom scope in the provider config.
@@ -35,20 +52,18 @@ module OmniAuth
 
       # Add audience into the token request
       def token_params
-        params = super.tap do |params|
+        super.tap do |params|
           # Required parameters for Tesla token exchange
-          params[:grant_type] = 'authorization_code'
-          params[:code] = request.params['code']
-          params[:client_id] = options.client_id
+          params[:grant_type]    = 'authorization_code'
+          params[:code]          = request.params['code']
+          params[:client_id]     = options.client_id
           params[:client_secret] = options.client_secret
-          params[:audience] = options[:audience]
-          params[:redirect_uri] = callback_url
+          params[:audience]      = options[:audience]
+          params[:redirect_uri]  = callback_url
         end
-        
-        params
       end
 
-      # You might also need to override build_access_token
+      # Override build_access_token if necessary
       def build_access_token
         verifier = request.params['code']
         client.auth_code.get_token(
@@ -58,47 +73,36 @@ module OmniAuth
         )
       end
 
-      # Tesla's /api/1/users/me returns:
-      # {
-      #   "response": {
-      #     "email": "test-user@tesla.com",
-      #     "full_name": "Testy McTesterson",
-      #     "profile_image_url": "...",
-      #     "vault_uuid": "b5c443af-a286-49eb-a4ad-35a97963155d"
-      #   }
-      # }
-      #
-      # We'll use vault_uuid as the `uid` if present.
+      # UID is vault_uuid from the user info response
       uid { raw_info.dig('response', 'vault_uuid') }
 
+      # User info retrieved from Tesla's API
       info do
         response_data = raw_info['response'] || {}
         {
-          email:            response_data['email'],
-          full_name:        response_data['full_name'],
-          profile_image_url: response_data['profile_image_url']
+          email:              response_data['email'],
+          full_name:          response_data['full_name'],
+          profile_image_url:  response_data['profile_image_url']
         }
       end
 
+      # Extra information (raw user info)
       extra do
-        # Provide the entire user hash for debugging or additional use.
         { raw_info: raw_info }
       end
 
       # Fetch user info from /api/1/users/me
-      # By default, OmniAuth::Strategies::OAuth2 includes the
-      # access token as a Bearer token in the Authorization header.
       def raw_info
         @raw_info ||= begin
           url = 'https://fleet-api.prd.na.vn.cloud.tesla.com/api/1/users/me'
-          
+
           response = access_token.get(url, headers: {
             'Content-Type' => 'application/json'
           })
-          
+
           MultiJson.load(response.body)
         rescue ::OAuth2::Error => e
-          puts "DEBUG - Error response: #{e.response&.body}"
+          warn "OmniAuth Tesla raw_info error: #{e.response&.body}"
           {}
         end
       end
@@ -112,40 +116,37 @@ module OmniAuth
         hash
       end
 
-      # Override callback_url if your callback URL is not the default that OmniAuth calculates.
-      # The default behavior is to use full_host + script_name + callback_path,
-      # which is typically correct and matches what OmniAuth sends as redirect_uri.
-      #
+      # Override callback_url if necessary
       def callback_url
          full_host + script_name + callback_path
       end
 
-      # You might also want to log in the request phase
+      # Optionally log the request phase
       def request_phase
         super
       end
 
       # Class-level helper to refresh an access token using a saved refresh_token
       def self.refresh_with(refresh_token)
-        # Load default options from OmniAuth's config (or override as needed)
-        opts = OmniAuth::Strategies::Tesla.options
-
         client = ::OAuth2::Client.new(
-          opts.client_id,
-          opts.client_secret,
-          opts.client_options.to_h
+          self.client_id,
+          self.client_secret,
+          site: self.site,
+          authorize_url: self.authorize_url,
+          token_url: self.token_url
         )
 
         token_obj = ::OAuth2::AccessToken.new(client, '', refresh_token: refresh_token)
         new_token = token_obj.refresh!
         new_token
       rescue ::OAuth2::Error => e
-        Rails.logger.error("Tesla refresh error: #{e.message}")
+        # Use a generic warning for logging since Rails.logger may not be available
+        warn "Tesla refresh error: #{e.message}"
         nil
       end
-
     end
   end
 end
 
+# Add camelization for the Tesla strategy
 OmniAuth.config.add_camelization 'tesla', 'Tesla'
