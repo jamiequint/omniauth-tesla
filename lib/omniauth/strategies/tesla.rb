@@ -124,6 +124,26 @@ module OmniAuth
       def request_phase
         super
       end
+
+      # Class-level helper to refresh an access token using a saved refresh_token
+      def self.refresh_with(refresh_token)
+        # Load default options from OmniAuth's config (or override as needed)
+        opts = OmniAuth::Strategies::Tesla.options
+
+        client = ::OAuth2::Client.new(
+          opts.client_id,
+          opts.client_secret,
+          opts.client_options.to_h
+        )
+
+        token_obj = ::OAuth2::AccessToken.new(client, '', refresh_token: refresh_token)
+        new_token = token_obj.refresh!
+        new_token
+      rescue ::OAuth2::Error => e
+        Rails.logger.error("Tesla refresh error: #{e.message}")
+        nil
+      end
+
     end
   end
 end
